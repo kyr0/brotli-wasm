@@ -18,8 +18,8 @@ lto = true
 opt-level = 's'
 
 [dependencies]
-wasm-bindgen = { version = "0.2.108", features = ["serde-serialize"] }
-brotli = "5.0"
+wasm-bindgen = "0.2.108"
+brotli = "8"
 console_error_panic_hook = { version = "0.1", optional = true }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = { version = "1.0" }
+serde-wasm-bindgen = "0.6"

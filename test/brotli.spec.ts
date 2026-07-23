@@ -420,6 +420,101 @@ describe("Brotli-wasm", () => {
   });
 });
 
+describe("Brotli-wasm custom dictionaries", () => {
+
+    let brotli: BrotliWasmType;
+    beforeEach(async () => {
+        brotli = await brotliPromise;
+    });
+
+    // A dictionary and payload that share long phrases, so the dictionary actually helps.
+    // The same strings are used for the reference CLI fixtures below.
+    const sentences: string[] = [];
+    for (let i = 0; i < 12; i++) {
+        sentences.push(`Record number ${i}: the quick brown fox number ${i} jumps over the lazy dog while packing box ${i} with jugs.`);
+    }
+    const dictionary = textEncoder.encode(sentences.join('\n') + '\n');
+    const payload = textEncoder.encode(
+        [sentences[0], sentences[3], sentences[7], sentences[11], sentences[5]].join('\n') + '\n'
+    );
+    const payloadString = textDecoder.decode(payload);
+
+    [1, 5, 9, 11].forEach((quality) => {
+        it(`can compress & decompress with a custom dictionary at quality ${quality}`, () => {
+            const compressed = brotli.compress(payload, { quality, customDictionary: dictionary });
+            const decompressed = brotli.decompress(compressed, { customDictionary: dictionary });
+            expect(textDecoder.decode(decompressed)).to.equal(payloadString);
+        });
+    });
+
+    it("produces different & smaller output with a custom dictionary", () => {
+        // Regression test: previously customDictionary was silently ignored,
+        // resulting in byte-identical output.
+        const withDict = brotli.compress(payload, { quality: 11, customDictionary: dictionary });
+        const withoutDict = brotli.compress(payload, { quality: 11 });
+        expect(dataToBase64(withDict)).to.not.equal(dataToBase64(withoutDict));
+        expect(withDict.length).to.be.lessThan(withoutDict.length);
+    });
+
+    it("can decompress data compressed by the reference C brotli with a dictionary", () => {
+        // Generated with: brotli -q 11 -w 22 -D dict.txt -c payload.txt | base64
+        // (reference C brotli 1.2.0, raw dictionary semantics; dict.txt & payload.txt
+        // contain the dictionary & payload strings defined above)
+        const input = base64ToData('G/sB6CUACrDAmsgoaYl5lR+8M+sD+JMA');
+        const result = brotli.decompress(input, { customDictionary: dictionary });
+        expect(textDecoder.decode(result)).to.equal(payloadString);
+    });
+
+    it("cleanly fails when decompressing dictionary-compressed data without the dictionary", () => {
+        const compressed = brotli.compress(payload, { quality: 11, customDictionary: dictionary });
+        expect(() => brotli.decompress(compressed)).to.throw('Brotli decompress failed');
+    });
+
+    it("cleanly fails when decompressing with the wrong dictionary", () => {
+        const wrongDictionary = textEncoder.encode(
+            'completely unrelated dictionary content that just happens to be padded........'
+                .repeat(15).slice(0, dictionary.length)
+        );
+        const compressed = brotli.compress(payload, { quality: 11, customDictionary: dictionary });
+        expect(() =>
+            brotli.decompress(compressed, { customDictionary: wrongDictionary })
+        ).to.throw('Brotli decompress failed');
+    });
+
+    it("can streamingly compress & decompress with a custom dictionary", () => {
+        const compressStream = new brotli.CompressStream(11, dictionary);
+        const result1 = compressStream.compress(payload, 4096);
+        expect(result1.code).to.equal(brotli.BrotliStreamResultCode.NeedsMoreInput);
+        const result2 = compressStream.compress(undefined, 4096);
+        expect(result2.code).to.equal(brotli.BrotliStreamResultCode.ResultSuccess);
+        const compressed = new Uint8Array([...result1.buf, ...result2.buf]);
+
+        const decompressStream = new brotli.DecompressStream(dictionary);
+        const result3 = decompressStream.decompress(compressed, 4096);
+        expect(result3.code).to.equal(brotli.BrotliStreamResultCode.ResultSuccess);
+        expect(textDecoder.decode(result3.buf)).to.equal(payloadString);
+    });
+
+    it("can mix one-shot & streaming (de)compression with a custom dictionary", () => {
+        const oneShot = brotli.compress(payload, { quality: 11, customDictionary: dictionary });
+
+        // One-shot compress -> streaming decompress:
+        const decompressStream = new brotli.DecompressStream(dictionary);
+        const result1 = decompressStream.decompress(oneShot, 4096);
+        expect(result1.code).to.equal(brotli.BrotliStreamResultCode.ResultSuccess);
+        expect(textDecoder.decode(result1.buf)).to.equal(payloadString);
+
+        // Streaming compress -> one-shot decompress:
+        const compressStream = new brotli.CompressStream(11, dictionary);
+        const result2 = compressStream.compress(payload, 4096);
+        const result3 = compressStream.compress(undefined, 4096);
+        const streamCompressed = new Uint8Array([...result2.buf, ...result3.buf]);
+        expect(textDecoder.decode(
+            brotli.decompress(streamCompressed, { customDictionary: dictionary })
+        )).to.equal(payloadString);
+    });
+});
+
 function generateRandomBytes(size: number) {
     const resultArray = new Uint8Array(size);
     let generatedSize = 0;
